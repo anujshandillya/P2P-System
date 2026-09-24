@@ -7,7 +7,7 @@ BIN ?= .
 
 COMMON := src/common/protocol.cpp src/common/net.cpp
 TRACKER := src/tracker/main.cpp src/tracker/server.cpp src/tracker/state.cpp src/tracker/journal.cpp
-CLIENT := src/client/main.cpp src/client/cli.cpp
+CLIENT := src/client/main.cpp src/client/cli.cpp src/common/sha1.cpp src/common/file.cpp
 TRACKER_OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) $(TRACKER))
 CLIENT_OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) $(CLIENT))
 
@@ -26,7 +26,15 @@ $(BUILD)/%.o: %.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-test: all
+$(BUILD)/file_probe: $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) src/common/sha1.cpp src/common/file.cpp tests/file_probe.cpp)
+	@mkdir -p $(@D)
+	$(CXX) $^ $(LDFLAGS) -o $@
+
+.PHONY: test-files
+test-files: $(BUILD)/file_probe
+	python3 tests/file_inspection.py "$(BUILD)/file_probe"
+
+test: all test-files
 	python3 tests/integration.py --bin-dir "$(BIN)"
 
 sanitize:
@@ -45,3 +53,4 @@ clean:
 	rm -rf build tracker client "$(BIN)/tracker.out" "$(BIN)/client.out"
 
 -include $(TRACKER_OBJ:.o=.d) $(CLIENT_OBJ:.o=.d)
+-include $(BUILD)/tests/file_probe.d

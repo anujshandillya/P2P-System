@@ -1,4 +1,5 @@
 #include "client/cli.hpp"
+#include "common/file.hpp"
 #include <algorithm>
 #include <chrono>
 #include <iostream>
@@ -82,7 +83,20 @@ namespace p2p {
                     std::cout << "create_user <user_id> <password>\nlogin <user_id> <password>\n"
                                 "create_group <group_id>\njoin_group <group_id>\nleave_group <group_id>\n"
                                 "list_groups\nlist_requests <group_id>\naccept_request <group_id> <user_id>\n"
+                                "upload_file <group_id> <file_path> (local preparation only)\n"
                                 "logout\nretry\nquit\n" << std::flush;
+                    continue;
+                }
+                if (command == "upload_file") {
+                    if (pending_) throw std::runtime_error("Use retry to resolve the previous request first");
+                    if (fields.size() != 3 || fields[1].empty())
+                        throw std::runtime_error("Usage: upload_file <group_id> <file_path>");
+                    if (token_.empty()) throw std::runtime_error("Login before preparing a file");
+                    const auto metadata = inspect_file(fields[2]);
+                    std::cout << "File prepared; publication is not implemented yet.\n"
+                              << "Filename: " << metadata.name << "\nSize: " << metadata.size
+                              << " bytes\nPieces: " << metadata.piece_hashes.size()
+                              << "\nSHA1: " << to_hex(metadata.whole_hash) << std::endl;
                     continue;
                 }
                 if (command == "retry" && fields.size() == 1) {
