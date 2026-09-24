@@ -8,7 +8,7 @@ int main(int argc, char** argv) {
             std::cerr << "Usage: ./client <IP>:<PORT> tracker_info.txt\n"; return 1; 
         }
         
-        const auto endpoint = p2p::parse_endpoint(argv[1]);
+        (void)p2p::parse_endpoint(argv[1]);
         const auto trackers = p2p::read_config(argv[2]);
         int preferred = 0;
         if (const char* value = std::getenv("P2P_PREFERRED_TRACKER")) {
@@ -17,8 +17,6 @@ int main(int argc, char** argv) {
             preferred = static_cast<int>(id - 1);
         }
         p2p::ignore_sigpipe();
-        // Reserve the advertised peer endpoint now; file serving is final-submission work.
-        auto listener = p2p::listen_on(endpoint);
         p2p::Client client(argv[1], trackers, preferred);
         client.run();
     } catch (const std::exception& e) { 

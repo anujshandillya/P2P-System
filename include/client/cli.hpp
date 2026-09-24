@@ -2,6 +2,7 @@
 
 #include "common/net.hpp"
 #include <optional>
+#include "client/transfer.hpp"
 
 namespace p2p {
     Fields split_command(const std::string& line);
@@ -17,5 +18,7 @@ namespace p2p {
         int preferred_;
         std::string token_;
         std::optional<Request> pending_;
+        std::optional<PreparedFile> pending_file_;
+        TransferManager transfers_;
     };
 } // namespace p2p

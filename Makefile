@@ -7,7 +7,7 @@ BIN ?= .
 
 COMMON := src/common/protocol.cpp src/common/net.cpp src/common/sha1.cpp src/common/file.cpp
 TRACKER := src/tracker/main.cpp src/tracker/server.cpp src/tracker/state.cpp src/tracker/journal.cpp
-CLIENT := src/client/main.cpp src/client/cli.cpp
+CLIENT := src/client/main.cpp src/client/cli.cpp src/client/transfer.cpp
 TRACKER_OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) $(TRACKER))
 CLIENT_OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) $(CLIENT))
 

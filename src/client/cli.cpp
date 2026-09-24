@@ -29,7 +29,7 @@ namespace p2p {
     }
 
     Client::Client(std::string endpoint, std::array<Endpoint, 2> trackers, int preferred)
-        : endpoint_(std::move(endpoint)), trackers_(std::move(trackers)), preferred_(preferred) {}
+        : endpoint_(std::move(endpoint)), trackers_(std::move(trackers)), preferred_(preferred), transfers_(endpoint_, trackers_) {}
 
     Response Client::dispatch(const Request& request) {
         Fields message{"CLIENT"};
@@ -67,8 +67,8 @@ namespace p2p {
         const bool interactive = ::isatty(STDIN_FILENO);
         const std::map<std::string, std::size_t> arities{{"create_user", 2}, {"login", 2}, {"logout", 0},
             {"create_group", 1}, {"join_group", 1}, {"leave_group", 1}, {"list_groups", 0},
-            {"list_requests", 1}, {"accept_request", 2}};
-        if (interactive) std::cout << "P2P interim client. Type help for commands.\n";
+            {"list_requests", 1}, {"accept_request", 2}, {"upload_file", 2}, {"list_files", 1}, {"stop_share", 2}};
+        if (interactive) std::cout << "P2P client. Type help for commands.\n";
         std::string line;
         while (true) {
             if (interactive) { std::cout << "> " << std::flush; }
@@ -83,20 +83,8 @@ namespace p2p {
                     std::cout << "create_user <user_id> <password>\nlogin <user_id> <password>\n"
                                 "create_group <group_id>\njoin_group <group_id>\nleave_group <group_id>\n"
                                 "list_groups\nlist_requests <group_id>\naccept_request <group_id> <user_id>\n"
-                                "upload_file <group_id> <file_path> (local preparation only)\n"
+                                "upload_file <group_id> <file_path>\nlist_files <group_id>\nstop_share <group_id> <file_name>\n"
                                 "logout\nretry\nquit\n" << std::flush;
-                    continue;
-                }
-                if (command == "upload_file") {
-                    if (pending_) throw std::runtime_error("Use retry to resolve the previous request first");
-                    if (fields.size() != 3 || fields[1].empty())
-                        throw std::runtime_error("Usage: upload_file <group_id> <file_path>");
-                    if (token_.empty()) throw std::runtime_error("Login before preparing a file");
-                    const auto metadata = inspect_file(fields[2]);
-                    std::cout << "File prepared; publication is not implemented yet.\n"
-                              << "Filename: " << metadata.name << "\nSize: " << metadata.size
-                              << " bytes\nPieces: " << metadata.piece_hashes.size()
-                              << "\nSHA1: " << to_hex(metadata.whole_hash) << std::endl;
                     continue;
                 }
                 if (command == "retry" && fields.size() == 1) {
@@ -108,17 +96,30 @@ namespace p2p {
                     if (fields.size() != arity->second + 1) throw std::runtime_error("Incorrect arguments; use help");
                     Fields args(fields.begin() + 1, fields.end());
                     if (command == "login") args.push_back(endpoint_);
+                    if (command == "upload_file") {
+                        if (token_.empty()) throw std::runtime_error("Login before publishing a file");
+                        pending_file_ = transfers_.prepare(args[1]);
+                        args[1] = serialize_metadata(pending_file_->metadata);
+                    }
+                    if (command == "logout") transfers_.set_session("");
+                    if (command == "leave_group") transfers_.leave_group(args[0]);
+                    if (command == "stop_share") transfers_.stop_share(args[0], args[1]);
                     Request request{random_id(), token_, command, std::move(args)};
                     // Validate locally too, so malformed input cannot become a stuck pending request.
                     pending_ = Request::parse(request.fields());
                 }
                 const auto response = dispatch(*pending_);
-                if (response.status == "OK" && pending_->command == "login") token_ = response.token;
-                if ((response.status == "OK" && pending_->command == "logout") || response.status == "UNAUTHENTICATED") token_.clear();
-                pending_.reset();
+                if (response.status == "OK" && pending_->command == "login") {
+                    token_ = response.token; transfers_.set_session(token_);
+                }
+                if (response.status == "OK" && pending_->command == "upload_file" && pending_file_)
+                    transfers_.share(pending_->args[0], *pending_file_);
+                if ((response.status == "OK" && pending_->command == "logout") || response.status == "UNAUTHENTICATED") { token_.clear(); transfers_.set_session(""); }
+                pending_.reset(); pending_file_.reset();
                 print(response);
             } catch (const std::exception& e) { std::cout << "ERROR: " << e.what() << std::endl; }
         }
+        transfers_.set_session("");
         if (!token_.empty()) {
             try { print(dispatch(Request{random_id(), token_, "logout", {}})); }
             catch (const std::exception&) { std::cerr << "Logout could not reach a tracker; next credential login replaces this session.\n"; }

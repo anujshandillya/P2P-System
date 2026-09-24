@@ -367,8 +367,7 @@ def core_tests(cluster):
     result = subprocess.run([str(c.binaries / "client.out"), endpoint, str(c.configs[0])],
                             input=script, text=True, capture_output=True, timeout=30, env=c.env)
     assert result.returncode == 0 and "ERROR" not in result.stdout, result
-    assert "File prepared; publication is not implemented yet." in result.stdout, result.stdout
-    assert "Pieces: 1" in result.stdout and "a9993e364706816aba3e25717850c26c9cd0d89d" in result.stdout
+    assert "File published" in result.stdout, result.stdout
     assert "runtime error:" not in result.stderr and "Sanitizer" not in result.stderr, result
     assert "cli_group" in result.stdout and result.stdout.count("OK: Logged out") == 2, result.stdout
     c.stop(0)
