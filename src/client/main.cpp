@@ -4,7 +4,10 @@
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 3) { std::cerr << "Usage: ./client <IP>:<PORT> tracker_info.txt\n"; return 1; }
+        if (argc != 3) { 
+            std::cerr << "Usage: ./client <IP>:<PORT> tracker_info.txt\n"; return 1; 
+        }
+        
         const auto endpoint = p2p::parse_endpoint(argv[1]);
         const auto trackers = p2p::read_config(argv[2]);
         int preferred = 0;
@@ -18,6 +21,9 @@ int main(int argc, char** argv) {
         auto listener = p2p::listen_on(endpoint);
         p2p::Client client(argv[1], trackers, preferred);
         client.run();
-    } catch (const std::exception& e) { std::cerr << "Client error: " << e.what() << '\n'; return 1; }
+    } catch (const std::exception& e) { 
+        std::cerr << "Client error: " << e.what() << '\n'; return 1; 
+    }
+    
     return 0;
 }
