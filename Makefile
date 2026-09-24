@@ -5,9 +5,9 @@ LDFLAGS ?= -pthread
 BUILD ?= build
 BIN ?= .
 
-COMMON := src/common/protocol.cpp src/common/net.cpp
+COMMON := src/common/protocol.cpp src/common/net.cpp src/common/sha1.cpp src/common/file.cpp
 TRACKER := src/tracker/main.cpp src/tracker/server.cpp src/tracker/state.cpp src/tracker/journal.cpp
-CLIENT := src/client/main.cpp src/client/cli.cpp src/common/sha1.cpp src/common/file.cpp
+CLIENT := src/client/main.cpp src/client/cli.cpp
 TRACKER_OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) $(TRACKER))
 CLIENT_OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) $(CLIENT))
 
@@ -26,7 +26,7 @@ $(BUILD)/%.o: %.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/file_probe: $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) src/common/sha1.cpp src/common/file.cpp tests/file_probe.cpp)
+$(BUILD)/file_probe: $(patsubst %.cpp,$(BUILD)/%.o,$(COMMON) tests/file_probe.cpp)
 	@mkdir -p $(@D)
 	$(CXX) $^ $(LDFLAGS) -o $@
 

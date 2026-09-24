@@ -8,7 +8,7 @@
 
 namespace p2p {
     namespace {
-        constexpr std::uint32_t max_record = 8192;
+        constexpr std::uint32_t max_record = 132 * 1024;
         std::uint32_t checksum(const std::string& bytes) {
             std::uint32_t hash = 2166136261u;
             for (unsigned char byte : bytes) { hash ^= byte; hash *= 16777619u; }

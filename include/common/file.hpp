@@ -12,3 +12,9 @@ struct FileMetadata {
 };
 FileMetadata inspect_file(const std::string& path);
 }
+
+namespace p2p {
+// Validated, portable metadata encoding; local paths are never serialized.
+std::string serialize_metadata(const FileMetadata& metadata);
+FileMetadata parse_metadata(const std::string& bytes);
+}

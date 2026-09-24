@@ -87,8 +87,10 @@ namespace p2p {
         if (fields.size() < 3 || fields.size() > 8) throw std::runtime_error("Invalid request fields");
         if (fields[0].empty() || fields[0].size() > 128 || fields[1].size() > 128 || fields[2].size() > 64)
             throw std::runtime_error("Invalid request header");
-        for (const auto& field : fields)
-            if (field.size() > 256) throw std::runtime_error("Request field too long");
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            const auto limit = fields[2] == "upload_file" && i == 4 ? 128 * 1024U : 256U;
+            if (fields[i].size() > limit) throw std::runtime_error("Request field too long");
+        }
         return {fields[0], fields[1], fields[2], Fields(fields.begin() + 3, fields.end())};
     }
     Fields Response::fields() const {

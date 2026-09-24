@@ -59,6 +59,8 @@ namespace p2p {
         if (forwarded && id_ != 1) throw std::runtime_error("Only tracker 1 accepts forwarded requests");
         const auto req = Request::parse(Fields(message.begin() + static_cast<std::ptrdiff_t>(offset), message.end()));
 
+        if (req.command == "heartbeat") return state_.execute(req).fields();
+
         // Reject briefly rather than occupy every worker waiting on one command.
         // This leaves worker capacity for the peer's synchronization requests.
         std::unique_lock<std::mutex> operation(operation_mutex_, std::try_to_lock);

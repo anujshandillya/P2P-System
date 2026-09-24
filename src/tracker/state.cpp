@@ -21,14 +21,15 @@ namespace p2p {
             for (unsigned char c : value) if (c < 32 || c > 126) return false;
             return true;
         }
-        bool read_only(const std::string& command) { return command == "list_groups" || command == "list_requests"; }
+        bool read_only(const std::string& command) { return command == "list_groups" || command == "list_requests" || command == "list_files"
+            || command == "discover" || command == "authorize" || command == "heartbeat"; }
     }
 
     std::string Event::serialize() const {
         return encode({std::to_string(clock), std::to_string(origin), std::to_string(sequence), encode(request.fields()), issued_token});
     }
     Event Event::parse(const std::string& bytes) {
-        if (bytes.size() > 8192) throw std::runtime_error("Event too large");
+        if (bytes.size() > 132 * 1024) throw std::runtime_error("Event too large");
         const auto f = decode(bytes);
         if (f.size() != 5) throw std::runtime_error("Invalid event");
         const auto origin = number(f[1]);
@@ -48,7 +49,8 @@ namespace p2p {
         const auto& a = req.args;
         static const std::map<std::string, std::size_t> arities{
             {"create_user", 2}, {"login", 3}, {"logout", 0}, {"create_group", 1},
-            {"join_group", 1}, {"leave_group", 1}, {"list_groups", 0}, {"list_requests", 1}, {"accept_request", 2}};
+            {"join_group", 1}, {"leave_group", 1}, {"list_groups", 0}, {"list_requests", 1}, {"accept_request", 2}, {"upload_file", 2}, {"list_files", 1},
+            {"discover", 2}, {"stop_share", 2}, {"heartbeat", 0}, {"authorize", 4}};
         const auto arity = arities.find(cmd);
         if (arity == arities.end()) return error("UNKNOWN_COMMAND", "Unknown interim command");
         if (a.size() != arity->second) return error("INVALID_ARGUMENT", "Incorrect number of command arguments");
@@ -65,6 +67,8 @@ namespace p2p {
             if (user == model.users.end() || user->second.password != a[1])
                 return error("AUTH_FAILED", "Invalid user ID or password");
             if (!req.token.empty()) return error("ALREADY_LOGGED_IN", "Log out before logging in again");
+            for (auto& group : model.groups)
+                for (auto& file : group.second.files) file.second.shares.erase(a[0]);
             // A fresh credential login replaces a lost client's old session.
             user->second.token = issued_token;
             user->second.endpoint = a[2];
@@ -77,7 +81,10 @@ namespace p2p {
                 if (entry.second.token == req.token) { actor = entry.first; break; }
         }
         if (actor.empty()) return error("UNAUTHENTICATED", "Please log in; session is missing or revoked");
+        if (cmd == "heartbeat") return {"OK", "Alive", "local", "", {}};
         if (cmd == "logout") {
+            for (auto& group : model.groups)
+                for (auto& file : group.second.files) file.second.shares.erase(actor);
             model.users.at(actor).token.clear();
             model.users.at(actor).endpoint.clear();
             return {"OK", "Logged out", "local", "", {}};
@@ -92,7 +99,7 @@ namespace p2p {
         auto group_it = model.groups.find(a[0]);
         if (cmd == "create_group") {
             if (group_it != model.groups.end()) return error("ALREADY_EXISTS", "Group already exists");
-            model.groups.emplace(a[0], Group{actor, {actor}, {}, {actor}});
+            model.groups.emplace(a[0], Group{actor, {actor}, {}, {actor}, {}});
             return {"OK", "Group created", "local", "", {}};
         }
         if (group_it == model.groups.end()) return error("NOT_FOUND", "Group does not exist");
@@ -104,6 +111,7 @@ namespace p2p {
         }
         if (cmd == "leave_group") {
             if (!group.members.count(actor)) return error("NOT_MEMBER", "Not a group member");
+            for (auto& file : group.files) file.second.shares.erase(actor);
             group.members.erase(actor);
             group.join_order.erase(std::remove(group.join_order.begin(), group.join_order.end(), actor), group.join_order.end());
             if (group.members.empty()) {
@@ -115,6 +123,46 @@ namespace p2p {
                 return {"OK", "Left group; new owner: " + group.owner, "local", "", {}};
             }
             return {"OK", "Left group", "local", "", {}};
+        }
+        if (cmd == "upload_file" || cmd == "list_files" || cmd == "discover" || cmd == "stop_share" || cmd == "authorize") {
+            if (!group.members.count(actor)) return error("FORBIDDEN", "Only group members may access files");
+            if (cmd == "upload_file") {
+                FileMetadata metadata;
+                try { metadata = parse_metadata(a[1]); }
+                catch (const std::exception& e) { return error("INVALID_ARGUMENT", e.what()); }
+                auto existing = group.files.find(metadata.name);
+                if (existing != group.files.end() && serialize_metadata(existing->second.metadata) != serialize_metadata(metadata))
+                    return error("CONFLICT", "Filename already identifies different content");
+                auto& file = group.files[metadata.name];
+                file.metadata = std::move(metadata);
+                file.shares[actor] = req.token;
+                return {"OK", "File published", "local", "", {}};
+            }
+            if (cmd == "list_files") {
+                Response response{"OK", "Files", "local", "", {}};
+                for (const auto& file : group.files) if (!file.second.shares.empty()) response.items.push_back(file.first);
+                return response;
+            }
+            auto file = group.files.find(a[1]);
+            if (file == group.files.end()) return error("NOT_FOUND", "File does not exist");
+            if (cmd == "stop_share") {
+                if (!file->second.shares.erase(actor)) return error("NOT_FOUND", "You are not sharing this file");
+                return {"OK", "Sharing stopped", "local", "", {}};
+            }
+            if (cmd == "authorize") {
+                if (a[2] != to_hex(file->second.metadata.whole_hash)) return error("CONFLICT", "File identity changed");
+                for (const auto& share : file->second.shares)
+                    if (share.second == a[3] && model.users.at(share.first).token == a[3])
+                        return {"OK", "Transfer authorized", "local", "", {}};
+                return error("FORBIDDEN", "Source share is revoked");
+            }
+            Response response{"OK", "File metadata and peers", "local", "", {serialize_metadata(file->second.metadata)}};
+            for (const auto& share : file->second.shares) {
+                const auto& user = model.users.at(share.first);
+                if (user.token == share.second && !user.token.empty())
+                    response.items.push_back(encode({user.endpoint, user.token}));
+            }
+            return response;
         }
         if (group.owner != actor) return error("FORBIDDEN", "Only the group owner may manage requests");
         if (cmd == "list_requests") {
@@ -164,6 +212,28 @@ namespace p2p {
 
     Response State::execute(const Request& request) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (read_only(request.command)) {
+            auto response = apply(model_, request, "");
+            if (response.status != "OK") return response;
+            const auto now = std::chrono::steady_clock::now();
+            if (request.command == "heartbeat") {
+                for (auto it = alive_.begin(); it != alive_.end(); ) {
+                    if (now - it->second > std::chrono::seconds(15)) it = alive_.erase(it); else ++it;
+                }
+                alive_[request.token] = now;
+            }
+            if (request.command == "discover") {
+                auto& peers = response.items;
+                peers.erase(std::remove_if(peers.begin() + 1, peers.end(), [&](const std::string& item) {
+                    const auto fields = decode(item);
+                    const auto it = alive_.find(fields[1]);
+                    return it == alive_.end() || now - it->second > std::chrono::seconds(15);
+                }), peers.end());
+                // Do not disclose other users' session tokens to downloaders.
+                for (std::size_t i = 1; i < peers.size(); ++i) peers[i] = decode(peers[i])[0];
+            }
+            return response;
+        }
         auto previous = results_.find(request.id);
         if (previous != results_.end()) {
             if (previous->second.first != encode(request.fields()))

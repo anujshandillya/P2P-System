@@ -1,6 +1,8 @@
 #pragma once
 
 #include "common/net.hpp"
+#include "common/file.hpp"
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <set>
@@ -13,12 +15,17 @@ namespace p2p {
         std::string token;
         std::string endpoint;
     };
+    struct PublishedFile {
+        FileMetadata metadata;
+        std::map<std::string, std::string> shares; // User -> publishing session.
+    };
     struct Group {
         std::string owner;
         std::set<std::string> members;
         std::set<std::string> pending;
         // Current members in acceptance order; replay reconstructs this from events.
         std::vector<std::string> join_order;
+        std::map<std::string, PublishedFile> files;
     };
     struct Model {
         std::map<std::string, User> users;
@@ -66,6 +73,7 @@ namespace p2p {
         EventMap events_;
         Model model_;
         Results results_;
+        std::map<std::string, std::chrono::steady_clock::time_point> alive_;
         std::uint64_t clock_ = 0;
         std::uint64_t sequence_ = 0;
     };

@@ -63,3 +63,43 @@ FileMetadata inspect_file(const std::string& path) {
     return metadata;
 }
 }
+
+namespace p2p {
+namespace {
+Sha1Digest parse_hash(const std::string& text) {
+    if (text.size() != 40) throw std::runtime_error("Invalid SHA1 length");
+    Sha1Digest digest{};
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        const int value = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+        if (value < 0) throw std::runtime_error("Invalid SHA1 encoding");
+        digest[i/2] = static_cast<std::uint8_t>((digest[i/2] << 4) | value);
+    }
+    return digest;
+}
+}
+std::string serialize_metadata(const FileMetadata& metadata) {
+    Fields fields{metadata.name, std::to_string(metadata.size), std::to_string(piece_size), to_hex(metadata.whole_hash)};
+    for (const auto& hash : metadata.piece_hashes) fields.push_back(to_hex(hash));
+    return encode(fields);
+}
+FileMetadata parse_metadata(const std::string& bytes) {
+    if (bytes.size() > 128 * 1024) throw std::runtime_error("Metadata too large");
+    const auto fields = decode(bytes);
+    if (fields.size() < 4) throw std::runtime_error("Incomplete metadata");
+    FileMetadata metadata;
+    metadata.name = fields[0];
+    if (metadata.name.empty() || metadata.name.size() > 255 || metadata.name == "." || metadata.name == "..")
+        throw std::runtime_error("Invalid filename");
+    for (unsigned char c : metadata.name)
+        if (c < 32 || c == 127 || c == '/' || c == '\\') throw std::runtime_error("Unsafe filename");
+    metadata.size = number(fields[1]);
+    if (metadata.size > max_file_size || number(fields[2]) != piece_size
+        || fields.size() - 4 != (metadata.size + piece_size - 1) / piece_size)
+        throw std::runtime_error("Inconsistent file size or piece count");
+    metadata.whole_hash = parse_hash(fields[3]);
+    for (std::size_t i = 4; i < fields.size(); ++i) metadata.piece_hashes.push_back(parse_hash(fields[i]));
+    if (metadata.size == 0 && metadata.whole_hash != Sha1().finalize()) throw std::runtime_error("Invalid empty-file hash");
+    return metadata;
+}
+}
