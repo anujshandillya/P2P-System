@@ -14,7 +14,7 @@ public:
     ~TransferManager();
     TransferManager(const TransferManager&) = delete;
     TransferManager& operator=(const TransferManager&) = delete;
-    PreparedFile prepare(const std::string& path);
+    PreparedFile prepare(const std::string& group, const std::string& path);
     void set_session(const std::string& token);
     void share(const std::string& group, const PreparedFile& file);
     void stop_share(const std::string& group, const std::string& name);

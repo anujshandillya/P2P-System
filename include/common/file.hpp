@@ -11,6 +11,7 @@ struct FileMetadata {
     std::vector<Sha1Digest> piece_hashes;
 };
 FileMetadata inspect_file(const std::string& path);
+FileMetadata inspect_file(int fd, const std::string& name);
 }
 
 namespace p2p {

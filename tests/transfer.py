@@ -71,8 +71,48 @@ def peer_tests(c):
         print('PASS: real peer serving, discovery heartbeat, permissions, stop-share and changed-source rejection', flush=True)
     finally: seed.close()
 
+def download_tests(c):
+    c.start(0); c.start(1)
+    for name in ['a', 'b', 'c']: c.command(0, 'create_user', name, 'pass')
+    clients = [Client(c) for _ in range(3)]
+    try:
+        for client, name in zip(clients, ['a', 'b', 'c']): client.send(f'login {name} pass')
+        a, b, d = clients
+        a.send('create_group g')
+        for client, name in [(b, 'b'), (d, 'c')]:
+            client.send('join_group g'); a.send(f'accept_request g {name}')
+        destinations = [c.directory / 'b', c.directory / 'c']
+        for path in destinations: path.mkdir()
+        data = bytes(range(256)) * 18001
+        path = c.directory / 'shared file.bin'; path.write_bytes(data)
+        empty = c.directory / 'empty'; empty.write_bytes(b'')
+        a.send(f'upload_file g "{path}"', 'File published')
+        a.send(f'upload_file g "{empty}"', 'File published')
+        b.send(f'download_file g "{path.name}" "{destinations[0]}"', 'Download queued')
+        b.send(f'download_file g empty "{destinations[0]}"', 'Download queued')
+        eventually(lambda: (destinations[0] / path.name).exists(), timeout=30)
+        eventually(lambda: (destinations[0] / 'empty').exists(), timeout=30)
+        assert (destinations[0] / path.name).read_bytes() == data
+        assert (destinations[0] / 'empty').read_bytes() == b''
+        b.send('show_downloads', '[C] [g] shared file.bin')
+        b.send(f'download_file g "{path.name}" "{destinations[0]}"', 'Destination already exists')
+        # Completed downloader becomes an independently discoverable seeder.
+        time.sleep(3)
+        a.send(f'stop_share g "{path.name}"', 'Sharing stopped')
+        d.send(f'download_file g "{path.name}" "{destinations[1]}"', 'Download queued')
+        eventually(lambda: (destinations[1] / path.name).exists(), timeout=30)
+        assert (destinations[1] / path.name).read_bytes() == data
+        print('PASS: concurrent downloads, empty file, final verification, safe destinations and downloaded-file seeding', flush=True)
+    finally:
+        for client in clients: client.close()
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='p2p-transfer-') as directory:
         c = Cluster(directory, Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve())
-        try: peer_tests(c)
+        try:
+            peer_tests(c)
+            c.close()
+            nested = Path(directory) / "downloads"; nested.mkdir()
+            c = Cluster(nested, c.binaries)
+            download_tests(c)
         finally: c.close()

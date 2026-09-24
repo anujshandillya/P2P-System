@@ -84,7 +84,19 @@ namespace p2p {
                                 "create_group <group_id>\njoin_group <group_id>\nleave_group <group_id>\n"
                                 "list_groups\nlist_requests <group_id>\naccept_request <group_id> <user_id>\n"
                                 "upload_file <group_id> <file_path>\nlist_files <group_id>\nstop_share <group_id> <file_name>\n"
+                                "download_file <group_id> <file_name> <destination_path>\nshow_downloads\n"
                                 "logout\nretry\nquit\n" << std::flush;
+                    continue;
+                }
+                if (command == "show_downloads" && fields.size() == 1) {
+                    print({"OK", "Downloads", "local", "", transfers_.downloads()});
+                    continue;
+                }
+                if (command == "download_file") {
+                    if (pending_) throw std::runtime_error("Use retry to resolve the previous request first");
+                    if (fields.size() != 4) throw std::runtime_error("Usage: download_file <group_id> <file_name> <destination_path>");
+                    transfers_.download(fields[1], fields[2], fields[3]);
+                    std::cout << "OK: Download queued\n" << std::flush;
                     continue;
                 }
                 if (command == "retry" && fields.size() == 1) {
@@ -92,13 +104,13 @@ namespace p2p {
                 } else {
                     if (pending_) throw std::runtime_error("Use retry to resolve the previous request first");
                     const auto arity = arities.find(command);
-                    if (arity == arities.end()) throw std::runtime_error("Unknown interim command; use help");
+                    if (arity == arities.end()) throw std::runtime_error("Unknown command; use help");
                     if (fields.size() != arity->second + 1) throw std::runtime_error("Incorrect arguments; use help");
                     Fields args(fields.begin() + 1, fields.end());
                     if (command == "login") args.push_back(endpoint_);
                     if (command == "upload_file") {
                         if (token_.empty()) throw std::runtime_error("Login before publishing a file");
-                        pending_file_ = transfers_.prepare(args[1]);
+                        pending_file_ = transfers_.prepare(args[0], args[1]);
                         args[1] = serialize_metadata(pending_file_->metadata);
                     }
                     if (command == "logout") transfers_.set_session("");

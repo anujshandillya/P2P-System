@@ -29,14 +29,17 @@ FileMetadata inspect_file(const std::string& path) {
     // Avoid blocking on a FIFO before we can reject it as nonregular.
     Fd fd(::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC));
     if (fd.get() < 0) io_error("Cannot open file");
+    const auto slash = path.find_last_of('/');
+    return inspect_file(fd.get(), path.substr(slash == std::string::npos ? 0 : slash + 1));
+}
+FileMetadata inspect_file(int fd, const std::string& name) {
     struct stat before{}, after{};
-    if (::fstat(fd.get(), &before) < 0) io_error("Cannot inspect file");
+    if (::fstat(fd, &before) < 0) io_error("Cannot inspect file");
     if (!S_ISREG(before.st_mode)) throw std::runtime_error("Path must identify a regular file");
     if (before.st_size < 0 || static_cast<std::uint64_t>(before.st_size) > max_file_size)
         throw std::runtime_error("File exceeds the 1 GiB limit");
     FileMetadata metadata;
-    const auto slash = path.find_last_of('/');
-    metadata.name = path.substr(slash == std::string::npos ? 0 : slash + 1);
+    metadata.name = name;
     metadata.size = static_cast<std::uint64_t>(before.st_size);
     metadata.piece_hashes.reserve((metadata.size + piece_size - 1) / piece_size);
     std::vector<std::uint8_t> buffer(piece_size);
@@ -46,7 +49,7 @@ FileMetadata inspect_file(const std::string& path) {
         const auto length = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, piece_size));
         std::size_t received = 0;
         while (received < length) {
-            const auto count = ::read(fd.get(), buffer.data() + received, length - received);
+            const auto count = ::pread(fd, buffer.data() + received, length - received, static_cast<off_t>(metadata.size - remaining + received));
             if (count < 0) { if (errno == EINTR) continue; io_error("Cannot read file"); }
             if (count == 0) throw std::runtime_error("File changed during inspection (unexpected EOF)");
             received += static_cast<std::size_t>(count);
@@ -58,7 +61,7 @@ FileMetadata inspect_file(const std::string& path) {
         remaining -= length;
     }
     metadata.whole_hash = whole.finalize();
-    if (::fstat(fd.get(), &after) < 0) io_error("Cannot recheck file");
+    if (::fstat(fd, &after) < 0) io_error("Cannot recheck file");
     if (changed(before, after)) throw std::runtime_error("File changed during inspection; try again");
     return metadata;
 }

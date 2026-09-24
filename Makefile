@@ -36,18 +36,27 @@ test-files: $(BUILD)/file_probe
 
 test: all test-files
 	python3 tests/integration.py --bin-dir "$(BIN)"
+	python3 tests/publication.py "$(BIN)"
+	python3 tests/transfer.py "$(BIN)"
+	python3 tests/recovery.py "$(BIN)"
 
 sanitize:
-	$(MAKE) BUILD=build/sanitize BIN=build/sanitize/bin CXXFLAGS='-std=c++17 -O1 -g -Wall -Wextra -Wpedantic -pthread -fsanitize=address,undefined -fno-omit-frame-pointer' LDFLAGS='-pthread -fsanitize=address,undefined' all
+	$(MAKE) BUILD=build/sanitize BIN=build/sanitize/bin CXXFLAGS='-std=c++17 -O1 -g -Wall -Wextra -Wpedantic -pthread -fsanitize=address,undefined -fno-omit-frame-pointer' LDFLAGS='-pthread -fsanitize=address,undefined' all test-files
 
 test-sanitize: sanitize
 	python3 tests/integration.py --bin-dir build/sanitize/bin
+	python3 tests/publication.py build/sanitize/bin
+	python3 tests/transfer.py build/sanitize/bin
+	python3 tests/recovery.py build/sanitize/bin
 
 thread-sanitize:
-	$(MAKE) BUILD=build/tsan BIN=build/tsan/bin CXXFLAGS='-std=c++17 -O1 -g -Wall -Wextra -Wpedantic -pthread -fsanitize=thread -fno-omit-frame-pointer' LDFLAGS='-pthread -fsanitize=thread' all
+	$(MAKE) BUILD=build/tsan BIN=build/tsan/bin CXXFLAGS='-std=c++17 -O1 -g -Wall -Wextra -Wpedantic -pthread -fsanitize=thread -fno-omit-frame-pointer' LDFLAGS='-pthread -fsanitize=thread' all test-files
 
 test-thread-sanitize: thread-sanitize
 	python3 tests/integration.py --bin-dir build/tsan/bin
+	python3 tests/publication.py build/tsan/bin
+	python3 tests/transfer.py build/tsan/bin
+	python3 tests/recovery.py build/tsan/bin
 
 clean:
 	rm -rf build tracker client "$(BIN)/tracker.out" "$(BIN)/client.out"
