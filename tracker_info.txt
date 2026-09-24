@@ -1,0 +1,3 @@
+# Exactly two numeric IPv4 endpoints, one per line.
+127.0.0.1 5001
+127.0.0.1 5002

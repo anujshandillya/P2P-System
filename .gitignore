@@ -1,0 +1,13 @@
+/build
+*.out
+*.o
+*.d
+*3.pdf
+/tests
+*.wal
+*.wal.*
+__pycache__/
+*.dSYM/
+*.DS_Store
+*.md
+*.code-workspace
