@@ -120,12 +120,11 @@ namespace p2p {
                     // Validate locally too, so malformed input cannot become a stuck pending request.
                     pending_ = Request::parse(request.fields());
                 }
-                const auto response = dispatch(*pending_);
+                const auto response = pending_->command == "upload_file" && pending_file_
+                    ? transfers_.publish(*pending_, *pending_file_) : dispatch(*pending_);
                 if (response.status == "OK" && pending_->command == "login") {
                     token_ = response.token; transfers_.set_session(token_);
                 }
-                if (response.status == "OK" && pending_->command == "upload_file" && pending_file_)
-                    transfers_.share(pending_->args[0], *pending_file_);
                 if ((response.status == "OK" && pending_->command == "logout") || response.status == "UNAUTHENTICATED") { token_.clear(); transfers_.set_session(""); }
                 pending_.reset(); pending_file_.reset();
                 print(response);

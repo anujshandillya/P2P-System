@@ -16,12 +16,13 @@ public:
     TransferManager& operator=(const TransferManager&) = delete;
     PreparedFile prepare(const std::string& group, const std::string& path);
     void set_session(const std::string& token);
-    void share(const std::string& group, const PreparedFile& file);
+    Response publish(const Request& request, const PreparedFile& file);
     void stop_share(const std::string& group, const std::string& name);
     void leave_group(const std::string& group);
     void download(const std::string& group, const std::string& name, const std::string& directory);
     Fields downloads() const;
 private:
+    void share(const std::string& group, const PreparedFile& file);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

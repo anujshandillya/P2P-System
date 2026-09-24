@@ -3,7 +3,8 @@ from pathlib import Path
 import sys
 import tempfile
 import uuid
-from integration import Cluster, frame, eventually
+from integration import Cluster, eventually, rpc
+import time
 import struct
 
 
@@ -62,8 +63,33 @@ def run(c):
     assert c.command(1, 'list_files', 'g', token=b)[4:] == []
     print('PASS: publication, conflicts, permissions, multiple sources, revocation, restart and 1 GiB metadata')
 
+def partition_files(c):
+    c.start(0); c.start(1)
+    for user in ['left', 'right']: c.command(0, 'create_user', user, 'pass')
+    a, b = c.login(0, 'left'), c.login(0, 'right')
+    c.command(0, 'create_group', 'g', token=a)
+    c.command(0, 'join_group', 'g', token=b); c.command(0, 'accept_request', 'g', 'right', token=a)
+    for proxy in c.proxies: proxy.partition()
+    time.sleep(0.2)
+    left, right = metadata('conflict', b'left'), metadata('conflict', b'right')
+    c.command(0, 'upload_file', 'g', left, token=a)
+    c.command(1, 'upload_file', 'g', right, token=b)
+    for proxy in c.proxies: proxy.enabled.set()
+    def converged():
+        return rpc(c.ports[0], ['SYNC', 'integration-test-key'])[1:] == rpc(c.ports[1], ['SYNC', 'integration-test-key'])[1:]
+    eventually(converged)
+    first = c.command(0, 'discover', 'g', 'conflict', token=a)[4]
+    second = c.command(1, 'discover', 'g', 'conflict', token=b)[4]
+    assert first == second and first.encode() in [left, right]
+    print('PASS: conflicting file publications converge after a real tracker-link partition')
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='p2p-publication-') as directory:
         c = Cluster(directory, Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve())
-        try: run(c)
+        try:
+            run(c)
+            c.close()
+            nested = Path(directory) / 'partition'; nested.mkdir()
+            c = Cluster(nested, c.binaries, proxies=True)
+            partition_files(c)
         finally: c.close()

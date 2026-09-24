@@ -72,7 +72,7 @@ namespace p2p {
                 Fields forwarded_message{"FORWARD", key_};
                 const auto fields = req.fields();
                 forwarded_message.insert(forwarded_message.end(), fields.begin(), fields.end());
-                return Response::parse(rpc(endpoints_[0], forwarded_message, 4500)).fields();
+                return Response::parse(rpc(endpoints_[0], forwarded_message, 2500)).fields();
             } catch (const std::exception&) {
                 // An uncertain forward is safe to retry locally with the original
                 // request ID; reconnect replay deduplicates accepted copies.

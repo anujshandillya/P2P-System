@@ -23,10 +23,13 @@ Response tracker_rpc(const std::array<Endpoint, 2>& trackers, const Request& req
     Fields fields{"CLIENT"};
     const auto payload = Request::parse(request.fields()).fields();
     fields.insert(fields.end(), payload.begin(), payload.end());
+    const auto deadline = Clock::now() + std::chrono::seconds(12);
     for (int attempt = 0; attempt < 3; ++attempt) {
         for (const auto& tracker : trackers) {
             try {
-                auto response = Response::parse(rpc(tracker, fields, 1800));
+                const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+                if (remaining <= 0) throw std::runtime_error("Tracker deadline expired");
+                auto response = Response::parse(rpc(tracker, fields, static_cast<int>(std::min<long long>(6500, remaining))));
                 if (response.status != "RETRY_LATER") return response;
             } catch (const std::exception&) {}
         }
@@ -54,6 +57,8 @@ struct TransferManager::Impl {
         PreparedFile file;
         std::vector<unsigned char> verified;
         bool active = true;
+        bool withdraw_pending = false;
+        Request withdrawal;
     };
     struct Job {
         Key key;
@@ -65,7 +70,6 @@ struct TransferManager::Impl {
         std::vector<unsigned> attempts;
         std::vector<Clock::time_point> retry_at;
         std::vector<std::string> peers;
-        std::size_t peer_cursor = 0;
         std::size_t in_flight = 0;
         std::size_t completed = 0;
         std::string status = "D", error;
@@ -92,8 +96,10 @@ struct TransferManager::Impl {
     std::deque<Fd> connections;
     std::thread acceptor, maintenance;
     std::vector<std::thread> servers;
-    // Authorization lasts at most two seconds; local revocation is checked per request.
-    std::map<std::string, Clock::time_point> authorizations;
+    struct Authorization { Clock::time_point check_after, outage_deadline; };
+    // Recheck permissions every two seconds while trackers are reachable. Existing
+    // authorized transfers may use a bounded two-minute grace during an outage.
+    std::map<std::string, Authorization> authorizations;
 
     Impl(const std::string& endpoint, std::array<Endpoint, 2> endpoints)
         : trackers(std::move(endpoints)), endpoint_text(endpoint), listener(listen_on(parse_endpoint(endpoint))) {
@@ -128,13 +134,28 @@ struct TransferManager::Impl {
         {
             std::lock_guard<std::mutex> lock(mutex);
             auto cached = authorizations.find(key);
-            if (cached != authorizations.end() && Clock::now() < cached->second) return;
+            if (cached != authorizations.end() && Clock::now() < cached->second.check_after) return;
         }
-        auto response = tracker_rpc(trackers, {random_id(), request[4], "authorize", {request[1], request[2], request[3], own}});
-        if (response.status != "OK") throw std::runtime_error("Transfer authorization denied");
+        Response response;
+        try {
+            response = tracker_rpc(trackers, {random_id(), request[4], "authorize", {request[1], request[2], request[3], own}});
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto cached = authorizations.find(key);
+            if (cached != authorizations.end() && Clock::now() < cached->second.outage_deadline) {
+                cached->second.check_after = std::min(Clock::now() + std::chrono::seconds(2), cached->second.outage_deadline);
+                return;
+            }
+            throw; // New requests require online authorization.
+        }
+        if (response.status != "OK") {
+            std::lock_guard<std::mutex> lock(mutex);
+            authorizations.erase(key);
+            throw std::runtime_error("Transfer authorization denied");
+        }
         std::lock_guard<std::mutex> lock(mutex);
         if (authorizations.size() >= 256) authorizations.clear();
-        authorizations[key] = Clock::now() + std::chrono::seconds(2);
+        authorizations[key] = {Clock::now() + std::chrono::seconds(2), Clock::now() + std::chrono::seconds(120)};
     }
     Fields handle(const Fields& request) {
         if (request.size() < 5 || request.size() > 6 || (request[0] != "BITFIELD" && request[0] != "PIECE")
@@ -165,12 +186,17 @@ struct TransferManager::Impl {
         std::string bytes;
         try { bytes = read_piece(source->file.descriptor->get(), source->file.metadata, index); }
         catch (...) {
-            { std::lock_guard<std::mutex> lock(mutex); source->active = false; }
+            { std::lock_guard<std::mutex> lock(mutex); source->active = false; source->withdraw_pending = true; }
             try {
                 std::lock_guard<std::mutex> publication(publication_mutex);
                 bool same;
                 { std::lock_guard<std::mutex> lock(mutex); auto current = sources.find(key); same = token == own && current != sources.end() && current->second == source; }
-                if (same) (void)tracker_rpc(trackers, {random_id(), own, "stop_share", {key.first, key.second}});
+                if (same) {
+                    auto result = tracker_rpc(trackers, source->withdrawal);
+                    if (result.status == "OK" || result.status == "NOT_FOUND") {
+                        std::lock_guard<std::mutex> lock(mutex); source->withdraw_pending = false;
+                    }
+                }
             } catch (...) {}
             throw;
         }
@@ -238,7 +264,7 @@ struct TransferManager::Impl {
                         for (std::size_t i = 0; i < candidate->states.size(); ++i) {
                             if (candidate->states[i] != 0 || Clock::now() < candidate->retry_at[i]) continue;
                             candidate->states[i] = 1; ++candidate->in_flight;
-                            peer = candidate->peers[candidate->peer_cursor++ % candidate->peers.size()];
+                            peer = candidate->peers[(i + candidate->attempts[i]) % candidate->peers.size()];
                             index = i; job = candidate; break;
                         }
                     }
@@ -255,11 +281,11 @@ struct TransferManager::Impl {
                 const auto& metadata = job->source->file.metadata;
                 const auto identity = to_hex(metadata.whole_hash);
                 const auto endpoint = parse_endpoint(peer);
-                const auto bits = rpc(endpoint, {"BITFIELD", job->key.first, job->key.second, identity, job->session}, 4000);
+                const auto bits = rpc(endpoint, {"BITFIELD", job->key.first, job->key.second, identity, job->session}, 9000);
                 if (bits.size() != 3 || bits[0] != "OK" || bits[1] != identity
                     || bits[2].size() != metadata.piece_hashes.size() || bits[2][index] != '1')
                     throw std::runtime_error("Peer does not have this piece");
-                const auto response = rpc(endpoint, {"PIECE", job->key.first, job->key.second, identity, job->session, std::to_string(index)}, 4000);
+                const auto response = rpc(endpoint, {"PIECE", job->key.first, job->key.second, identity, job->session, std::to_string(index)}, 9000);
                 const auto offset = std::uint64_t(index) * piece_size;
                 const auto length = static_cast<std::size_t>(std::min<std::uint64_t>(piece_size, metadata.size - offset));
                 if (response.size() != 4 || response[0] != "OK" || response[1] != identity
@@ -300,10 +326,29 @@ struct TransferManager::Impl {
         while (!stopping) {
             std::string own;
             std::vector<std::shared_ptr<Job>> current;
-            { std::lock_guard<std::mutex> lock(mutex); own = token; current = jobs; }
+            std::vector<std::pair<Key, std::shared_ptr<Source>>> withdrawals;
+            {
+                std::lock_guard<std::mutex> lock(mutex); own = token; current = jobs;
+                for (const auto& source : sources) if (source.second->withdraw_pending) withdrawals.push_back(source);
+            }
             if (!own.empty()) {
                 for (const auto& tracker : trackers) {
                     try { (void)rpc(tracker, {"CLIENT", random_id(), own, "heartbeat"}, 1000); } catch (...) {}
+                }
+                for (const auto& item : withdrawals) {
+                    if (stopping) break;
+                    try {
+                        std::lock_guard<std::mutex> publication(publication_mutex);
+                        {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            auto source = sources.find(item.first);
+                            if (token != own || source == sources.end() || source->second != item.second || !item.second->withdraw_pending) continue;
+                        }
+                        const auto result = tracker_rpc(trackers, item.second->withdrawal);
+                        if (result.status == "OK" || result.status == "NOT_FOUND" || result.status == "FORBIDDEN") {
+                            std::lock_guard<std::mutex> lock(mutex); item.second->withdraw_pending = false;
+                        }
+                    } catch (...) {}
                 }
                 for (const auto& job : current) {
                     if (stopping) break;
@@ -398,13 +443,19 @@ void TransferManager::set_session(const std::string& token) {
     impl_->sources.clear(); impl_->authorizations.clear(); impl_->token = token;
     impl_->wake.notify_all();
 }
-void TransferManager::share(const std::string& group, const PreparedFile& file) {
+Response TransferManager::publish(const Request& request, const PreparedFile& file) {
     std::lock_guard<std::mutex> publication(impl_->publication_mutex);
+    auto response = tracker_rpc(impl_->trackers, request);
+    if (response.status == "OK") share(request.args.at(0), file);
+    return response;
+}
+void TransferManager::share(const std::string& group, const PreparedFile& file) {
     auto source = std::make_shared<Impl::Source>();
     source->file = file; source->verified.assign(file.metadata.piece_hashes.size(), 1);
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->token.empty()) throw std::runtime_error("Session revoked before sharing");
     const Key key{group, file.metadata.name};
+    source->withdrawal = {random_id(), impl_->token, "stop_share", {group, file.metadata.name}};
     for (const auto& job : impl_->jobs)
         if (job->key == key && job->status == "D") throw std::runtime_error("A download for this file is already active");
     auto previous = impl_->sources.find(key);
@@ -457,6 +508,7 @@ void TransferManager::download(const std::string& group, const std::string& name
     job->peers.erase(std::remove(job->peers.begin(), job->peers.end(), impl_->endpoint_text), job->peers.end());
     job->announcement = {random_id(), token, "upload_file", {group, serialize_metadata(metadata)}};
     job->revocation = {random_id(), token, "stop_share", {group, name}};
+    job->source->withdrawal = job->revocation;
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (token != impl_->token) throw std::runtime_error("Session changed");
     if (impl_->jobs.size() >= 64) throw std::runtime_error("Download history limit reached (64 jobs); restart client");

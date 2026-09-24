@@ -20,6 +20,7 @@ class Peer:
         self.maximum = 0
         self.lock = threading.Lock()
         self.abort = False
+        self.parity = None
         self.gate = threading.Event()
         self.gate.set()
         owner = self
@@ -31,7 +32,8 @@ class Peer:
                     kind, group, name, digest, token, *extra = fields
                     data = owner.files[name]
                     if kind == 'BITFIELD':
-                        self.request.sendall(frame(['OK', digest, '1' * ((len(data)+524287)//524288)]))
+                        bits = ''.join('1' if owner.parity is None or i % 2 == owner.parity else '0' for i in range((len(data)+524287)//524288))
+                        self.request.sendall(frame(['OK', digest, bits]))
                         return
                     with owner.lock:
                         owner.active += 1

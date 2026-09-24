@@ -65,9 +65,13 @@ def peer_tests(c):
         seed.send(f'stop_share files "{path.name}"', 'Sharing stopped')
         assert rpc(seed.port, request)[0] == b'ERROR'
         seed.send(f'upload_file files "{path}"', 'File published')
+        assert rpc(seed.port, ['PIECE', 'files', path.name, digest, token, '0'])[0] == b'OK'
+        c.stop(0); c.stop(1)
         path.write_bytes(b'changed')
         assert rpc(seed.port, ['PIECE', 'files', path.name, digest, token, '0'])[0] == b'ERROR'
         assert rpc(seed.port, request)[0] == b'ERROR'
+        c.start(0); c.start(1)
+        eventually(lambda: c.command(0, 'list_files', 'files', token=token)[4:] == [])
         print('PASS: real peer serving, discovery heartbeat, permissions, stop-share and changed-source rejection', flush=True)
     finally: seed.close()
 
