@@ -3,7 +3,7 @@
 #include <vector>
 namespace p2p {
     constexpr std::uint32_t piece_size = 512 * 1024;
-    constexpr std::uint64_t max_file_size = 1024ULL * 1024 * 1024;
+    constexpr std::uint64_t max_file_size = 1024ULL * 1024 * 1024 * 1.5;
     struct FileMetadata {
         std::string name;
         std::uint64_t size = 0;
