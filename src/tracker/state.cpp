@@ -69,7 +69,8 @@ namespace p2p {
             if (!req.token.empty()) return error("ALREADY_LOGGED_IN", "Log out before logging in again");
             for (auto& group : model.groups)
                 for (auto& file : group.second.files) file.second.shares.erase(a[0]);
-            // A fresh credential login replaces a lost client's old session.
+            // Preserve historical login replay semantics for existing journals.
+            // New requests enforce session exclusivity in execute(), after deduplication.
             user->second.token = issued_token;
             user->second.endpoint = a[2];
             return {"OK", "Logged in", "local", issued_token, {}};
@@ -244,6 +245,8 @@ namespace p2p {
         const auto token = request.command == "login" ? random_id() : "";
         auto response = apply(next, request, token);
         if (response.status != "OK" || read_only(request.command)) return response;
+        if (request.command == "login" && !model_.users.at(request.args[0]).token.empty())
+            return error("ALREADY_LOGGED_IN", "This user is already logged in on another client; log out there first");
         if (clock_ >= std::numeric_limits<std::uint64_t>::max() - 1)
             throw std::runtime_error("Logical clock exhausted");
         Event event{clock_ + 1, id_, sequence_ + 1, request, token};

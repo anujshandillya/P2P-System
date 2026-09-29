@@ -2,13 +2,85 @@
 #include "common/file.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
+#include <csignal>
 #include <iostream>
 #include <map>
+#include <poll.h>
 #include <stdexcept>
 #include <thread>
 #include <unistd.h>
 
 namespace p2p {
+    namespace {
+        volatile std::sig_atomic_t exit_requested = 0;
+        void request_exit(int) { exit_requested = 1; }
+
+        // Signal handlers only set a flag. Cleanup and network I/O run on the CLI thread.
+        struct ExitSignals {
+            const int signals[3]{SIGINT, SIGTERM, SIGHUP};
+            struct sigaction previous[3]{};
+            std::size_t installed = 0;
+            ExitSignals() {
+                exit_requested = 0;
+                struct sigaction action{};
+                action.sa_handler = request_exit;
+                sigemptyset(&action.sa_mask);
+                for (int signal : signals) {
+                    if (::sigaction(signal, &action, &previous[installed]) < 0) {
+                        restore();
+                        throw std::runtime_error("Cannot install client exit handlers");
+                    }
+                    ++installed;
+                }
+            }
+            void restore() {
+                while (installed) {
+                    --installed;
+                    ::sigaction(signals[installed], &previous[installed], nullptr);
+                }
+            }
+            ~ExitSignals() { restore(); }
+        };
+
+        class CommandInput {
+            char buffer_[1024]{};
+            std::size_t position_ = 0, length_ = 0;
+        public:
+            bool next(std::string& line) {
+                line.clear();
+                while (!exit_requested) {
+                    if (position_ != length_) {
+                        const char c = buffer_[position_++];
+                        if (c == '\n') return true;
+                        // Retain one excess byte to report an oversized command,
+                        // then discard the rest of that line without unbounded memory.
+                        if (line.size() <= 4096) line += c;
+                        continue;
+                    }
+                    pollfd input{STDIN_FILENO, POLLIN, 0};
+                    const int ready = ::poll(&input, 1, 100);
+                    if (ready < 0 && errno == EINTR) continue;
+                    if (ready < 0 || (input.revents & POLLNVAL)) {
+                        std::cerr << "Cannot read client input; exiting.\n";
+                        return false;
+                    }
+                    if (!ready || exit_requested) continue;
+                    const auto count = ::read(STDIN_FILENO, buffer_, sizeof(buffer_));
+                    if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+                    if (count < 0) {
+                        std::cerr << "Cannot read client input; exiting.\n";
+                        return false;
+                    }
+                    if (!count) return !line.empty();
+                    position_ = 0;
+                    length_ = static_cast<std::size_t>(count);
+                }
+                return false;
+            }
+        };
+    }
+
     Fields split_command(const std::string& line) {
         Fields out;
         std::string word;
@@ -64,6 +136,8 @@ namespace p2p {
     }
 
     void Client::run() {
+        ExitSignals signals;
+        CommandInput input;
         const bool interactive = ::isatty(STDIN_FILENO);
         const std::map<std::string, std::size_t> arities{{"create_user", 2}, {"login", 2}, {"logout", 0},
             {"create_group", 1}, {"join_group", 1}, {"leave_group", 1}, {"list_groups", 0},
@@ -72,7 +146,7 @@ namespace p2p {
         std::string line;
         while (true) {
             if (interactive) { std::cout << "> " << std::flush; }
-            if (!std::getline(std::cin, line)) break;
+            if (!input.next(line)) break;
             try {
                 if (line.size() > 4096) throw std::runtime_error("Command too long");
                 const auto fields = split_command(line);
@@ -131,9 +205,29 @@ namespace p2p {
             } catch (const std::exception& e) { std::cout << "ERROR: " << e.what() << std::endl; }
         }
         transfers_.set_session("");
+        // A login may have committed even if its reply was lost. Recover its
+        // token with the same request ID before attempting exit logout.
+        if (pending_ && pending_->command == "login") {
+            try {
+                const auto response = dispatch(*pending_);
+                if (response.status == "OK") token_ = response.token;
+                pending_.reset();
+            } catch (const std::exception&) {
+                std::cerr << "Could not resolve pending login during exit; the account may remain logged in.\n";
+            }
+        }
         if (!token_.empty()) {
-            try { print(dispatch(Request{random_id(), token_, "logout", {}})); }
-            catch (const std::exception&) { std::cerr << "Logout could not reach a tracker; next credential login replaces this session.\n"; }
+            try {
+                const auto request = pending_ && pending_->command == "logout"
+                    ? *pending_ : Request{random_id(), token_, "logout", {}};
+                const auto response = dispatch(request);
+                print(response);
+                if (response.status == "OK" || response.status == "UNAUTHENTICATED") {
+                    token_.clear();
+                    if (pending_ && pending_->command == "logout") pending_.reset();
+                } else std::cerr << "Exit logout was not confirmed; the account may remain logged in.\n";
+            }
+            catch (const std::exception&) { std::cerr << "Logout could not reach a tracker; the account may remain logged in.\n"; }
         }
         if (pending_) std::cerr << "Exiting with an unresolved request; its operation may have been applied.\n";
     }

@@ -1,9 +1,10 @@
 /build
+/downloads
+/tests
 *.out
 *.o
 *.d
 *3.pdf
-/tests
 *.wal
 *.wal.*
 __pycache__/

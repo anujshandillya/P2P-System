@@ -74,6 +74,10 @@ namespace p2p {
                 forwarded_message.insert(forwarded_message.end(), fields.begin(), fields.end());
                 return Response::parse(rpc(endpoints_[0], forwarded_message, 2500)).fields();
             } catch (const std::exception&) {
+                // A single login authority prevents isolated trackers from issuing
+                // two sessions for the same account. Other commands retain failover.
+                if (req.command == "login")
+                    return Response{"RETRY_LATER", "Login requires tracker 1; retry when it is reachable", "local", "", {}}.fields();
                 // An uncertain forward is safe to retry locally with the original
                 // request ID; reconnect replay deduplicates accepted copies.
             }
