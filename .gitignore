@@ -10,5 +10,4 @@
 __pycache__/
 *.dSYM/
 *.DS_Store
-*.md
 *.code-workspace

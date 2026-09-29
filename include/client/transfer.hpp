@@ -21,6 +21,8 @@ namespace p2p {
         void leave_group(const std::string& group);
         void download(const std::string& group, const std::string& name, const std::string& directory);
         Fields downloads() const;
+        // Returns each terminal download result once, for printing on the CLI thread.
+        Fields take_notifications();
     private:
         void share(const std::string& group, const PreparedFile& file);
         struct Impl;

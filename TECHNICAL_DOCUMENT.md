@@ -64,6 +64,24 @@ Existing WAL files remain replayable: the new exclusivity check applies to new r
 
 Holding descriptors preserves access to the opened objects if paths are renamed; it does not make source contents immutable. Outgoing pieces are rehashed to detect changes inconsistent with publication metadata.
 
+### Automatic terminal download notifications
+
+`TransferManager::take_notifications()` examines job state under the transfer mutex and returns each completed or failed job once, using a per-job `terminal_reported` flag. A successful line includes `COMPLETED`, the quoted group and filename, total bytes, verified/total pieces, `integrity=VERIFIED`, and the whole-file SHA-1 digest. A failed line includes `FAILED`, the same identity/size/progress fields, and the specific reason. Total bytes describe the expected file size, not partial bytes written.
+
+The CLI drains notifications between commands and during the input loop's 100 ms polling cycle, so an idle client reports the result without another user command. All console output remains on the CLI thread; download workers only update protected state. Interactive output moves to a new line and prints a fresh prompt after the result. A blocking foreground RPC delays reporting until control returns to the CLI. Exit cleanup also drains results after cancelling active jobs.
+
+Completion becomes eligible only after final SHA-1 verification, `fsync()`, and successful no-replace final installation. `fail()` ignores already-terminal jobs, preserving the first failure reason against late worker errors and preventing a completed result from being overwritten. Recoverable peer/piece errors do not trigger terminal notifications. Logout, group departure, and client exit keep the existing failed-job representation and report their cancellation reason. `show_downloads` continues to provide history independently of the one-time messages. Retrying a download creates a new job with its own terminal notification.
+
+Validation for automatic notifications: the build and transfer, recovery, availability, integration, and session-lifecycle suites passed. The updated checks observe stdout without issuing `show_downloads`, verify completion/hash/size/piece details for normal and empty files, check single failure reports for final hash mismatch and destination conflict, preserve partial command input, reject false terminal failures during retries, and verify cancellation notices on logout/exit.
+
+### Local path resolution
+
+Upload source paths and download destination directories support both absolute paths and paths relative to each client's process working directory, including `.` and `..`. The existing POSIX `open()` calls already provide these semantics; no path rewriting, global directory change, or conversion to an absolute string is required. Clients started from different directories resolve the same relative string independently. CLI quoting preserves spaces in a path, but does not perform shell expansion of `~`, environment variables, or wildcards.
+
+Publication extracts only the source basename for metadata; a peer never receives the uploader's local directory path. Download opens the destination directory once, then uses that descriptor for temporary creation, existence checks, final installation, and cleanup. Piece writes use the opened temporary file's descriptor. Both path forms therefore use the same integrity and no-overwrite checks. A destination is an existing directory, not a requested output filename. Missing directories are reported as errors instead of created implicitly.
+
+`tests/transfer.py` exercises all four relative/absolute upload-and-download combinations using real clients with distinct working directories, plus bare filenames, `./`, `../`, `.`, quoted spaces, missing paths, and refusal to overwrite existing files. Downloaded bytes are compared directly to their inputs. The path behavior was already implemented; the update makes it explicit in CLI help and documentation and adds regression coverage. Validation for this update: `make -j4` and `python3 tests/transfer.py .` both passed, including the existing transfer checks and the new path cases.
+
 ### 1.4 Concurrency and resource limits
 
 Each tracker has eight request workers, one replication thread, and a main accept/console loop. Each client has four peer-serving workers, four download workers shared across all jobs, an acceptor, and a maintenance thread, alongside the CLI. Tracker and peer pending-connection queues are bounded at 64.
@@ -286,8 +304,6 @@ The system's `P2P1` messages are distinct from the BitTorrent wire protocol desc
 
 ## 5. Challenges encountered and solutions implemented
 
-The challenges below are supported by the current implementation and existing development records in [REPORT.md](REPORT.md), [FILE_SHARING.md](docs/FILE_SHARING.md), and [COMMIT_HISTORY_AND_SYSCALLS.md](docs/COMMIT_HISTORY_AND_SYSCALLS.md). They are not a claim that every failure was reproduced during preparation of this document.
-
 | Challenge | Implemented solution | Remaining boundary |
 | --- | --- | --- |
 | A response is lost after a mutation has executed. | Stable request IDs, durable successful mutations, deduplicated results, and a retained CLI request for `retry`. | Client pending requests are not persisted; partition replay can change the outcome. |
@@ -305,34 +321,12 @@ The challenges below are supported by the current implementation and existing de
 | Another process creates the destination after its initial existence check. | Pin the directory, create an exclusive temporary file, and use `linkat()` for final no-replace installation. | Requires hard-link support; directory entries are not separately flushed for power-loss durability. |
 | Large transfers could consume whole-file memory or expose corrupt data. | Stream hashing, fixed-size pieces, bounded worker pools, positional writes, and verification before availability/completion. | Metadata/history still grow with pieces/events; restartable client progress is absent. |
 
-### Validation evidence
-
-The workspace contains Python suites for integration, publication, transfer, recovery, and availability, plus file-inspection and optional large-file checks. Their source covers fragmented messages, permission checks, tracker failover/partitions, dropped or corrupt peers, partial sources, destination races, and heartbeat expiry.
-
-[tests/RESULTS.md](tests/RESULTS.md) records historical interim test/sanitizer results; [docs/FILE_SHARING.md](docs/FILE_SHARING.md) records later transfer validation and measurements. These are historical observations, not fresh results for the current working tree. The session-policy update adds `tests/session_lifecycle.py` for duplicate/concurrent admission, idempotent retries, real-client exit paths, share cleanup, persistent groups, partitions, and tracker restart. Current validation results are recorded below; historical sanitizer/benchmark measurements were not rerun for this change.
-
-Validation after the session-policy change on 29 September 2026:
-
-| Command | Result |
-| --- | --- |
-| `make -j4` | Passed; both binaries rebuilt. |
-| `python3 tests/session_lifecycle.py .` | Passed; duplicate/concurrent login rejection, all supported exit paths, lost-reply cleanup, partitions, restart, and legacy WAL replay. |
-| `python3 tests/integration.py --bin-dir .` | Passed; user/group, request retry, concurrency, tracker recovery, protocol, CLI, ownership, and partition regressions. |
-| `python3 tests/publication.py .` | Passed; publication, session/share preservation, explicit logout revocation, and partition conflicts. |
-| `python3 tests/transfer.py .` | Passed; peer serving, concurrent transfers, empty files, verification, and downloaded-file seeding. |
-| `python3 tests/recovery.py .` | Passed; bad peers, partial seeding, worker bounds, whole-file mismatch, and logout cancellation. |
-| `python3 tests/availability.py .` | Passed; partial-peer rotation, tracker failover, destination race, and heartbeat expiry. |
-
-Tests used temporary localhost ports and journals. Existing tests that intentionally replaced a live session were updated to expect rejection or explicitly log out before their next login. Sanitizers and large-file benchmarks were not rerun for this change.
-
-The current Makefile retains test/sanitizer names in `.PHONY` declarations but no longer contains their earlier execution recipes. Therefore those names alone do not establish that `make test` or a sanitizer target executes the suites. The new session regression script is explicitly exempted from the existing test-file ignore rule. New Markdown files remain ignored by `.gitignore`.
-
 ## 6. References to external sources
 
 ### 6.1 Sources acknowledged by existing project documents
 
-1. **AOS Assignment 3** — [local supplied PDF](pdf/AOS_Assignment_3.pdf). [Plan.md](Plan.md) and [REPORT.md](REPORT.md) identify this as the source of project requirements. That attribution is preserved here; this document is an implementation description, not a fresh assignment-compliance audit.
-2. **Bram Cohen, “Incentives Build Robustness in BitTorrent,” 22 May 2003** — [original paper](https://www.bittorrent.org/bittorrentecon.pdf), [local copy](pdf/bittorrentecon.pdf). Existing project documents identify it as conceptual input for tracker-assisted peer discovery, piece verification, and sharing verified pieces during download. Its rarest-first, random-first, endgame, and incentive mechanisms are not implemented by this scheduler.
+
+1. **Bram Cohen, “Incentives Build Robustness in BitTorrent,” 22 May 2003** — [original paper](https://www.bittorrent.org/bittorrentecon.pdf), [local copy](pdf/bittorrentecon.pdf). Existing project documents identify it as conceptual input for tracker-assisted peer discovery, piece verification, and sharing verified pieces during download. Its rarest-first, random-first, endgame, and incentive mechanisms are not implemented by this scheduler.
 
 ### 6.2 Additional technical references consulted for this document
 

@@ -47,7 +47,8 @@ namespace p2p {
             char buffer_[1024]{};
             std::size_t position_ = 0, length_ = 0;
         public:
-            bool next(std::string& line) {
+            template<class OnIdle>
+            bool next(std::string& line, OnIdle on_idle) {
                 line.clear();
                 while (!exit_requested) {
                     if (position_ != length_) {
@@ -58,6 +59,7 @@ namespace p2p {
                         if (line.size() <= 4096) line += c;
                         continue;
                     }
+                    on_idle();
                     pollfd input{STDIN_FILENO, POLLIN, 0};
                     const int ready = ::poll(&input, 1, 100);
                     if (ready < 0 && errno == EINTR) continue;
@@ -139,14 +141,23 @@ namespace p2p {
         ExitSignals signals;
         CommandInput input;
         const bool interactive = ::isatty(STDIN_FILENO);
+        const auto report_downloads = [&](bool restore_prompt) {
+            const auto notifications = transfers_.take_notifications();
+            if (notifications.empty()) return;
+            if (interactive && restore_prompt) std::cout << '\n';
+            for (const auto& notification : notifications) std::cout << notification << '\n';
+            if (interactive && restore_prompt) std::cout << "> ";
+            std::cout.flush();
+        };
         const std::map<std::string, std::size_t> arities{{"create_user", 2}, {"login", 2}, {"logout", 0},
             {"create_group", 1}, {"join_group", 1}, {"leave_group", 1}, {"list_groups", 0},
             {"list_requests", 1}, {"accept_request", 2}, {"upload_file", 2}, {"list_files", 1}, {"stop_share", 2}};
         if (interactive) std::cout << "P2P client. Type help for commands.\n";
         std::string line;
         while (true) {
+            report_downloads(false);
             if (interactive) { std::cout << "> " << std::flush; }
-            if (!input.next(line)) break;
+            if (!input.next(line, [&] { report_downloads(true); })) break;
             try {
                 if (line.size() > 4096) throw std::runtime_error("Command too long");
                 const auto fields = split_command(line);
@@ -159,7 +170,11 @@ namespace p2p {
                                 "list_groups\nlist_requests <group_id>\naccept_request <group_id> <user_id>\n"
                                 "upload_file <group_id> <file_path>\nlist_files <group_id>\nstop_share <group_id> <file_name>\n"
                                 "download_file <group_id> <file_name> <destination_path>\nshow_downloads\n"
-                                "logout\nretry\nquit\n" << std::flush;
+                                "logout\nretry\nquit\n"
+                                "Upload paths and download directories may be relative or absolute.\n"
+                                "Relative paths use the directory where this client was started; ./ and ../ are supported.\n"
+                                "Download destinations must be existing directories. Quote paths containing spaces.\n"
+                                "Downloads automatically report COMPLETED (SHA1 verified) or FAILED (reason).\n" << std::flush;
                     continue;
                 }
                 if (command == "show_downloads" && fields.size() == 1) {
@@ -205,6 +220,7 @@ namespace p2p {
             } catch (const std::exception& e) { std::cout << "ERROR: " << e.what() << std::endl; }
         }
         transfers_.set_session("");
+        report_downloads(false);
         // A login may have committed even if its reply was lost. Recover its
         // token with the same request ID before attempting exit logout.
         if (pending_ && pending_->command == "login") {

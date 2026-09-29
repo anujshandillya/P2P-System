@@ -70,6 +70,19 @@ User and group IDs must be 1–64 characters using letters, digits, `.`, `_`, or
 
 `create_user` and `login` do not require a current session. Group and file operations require login; file operations also require group membership. `help` and `show_downloads` operate locally; exit commands also attempt tracker logout. Responses begin with `OK` or `ERROR`; a degraded suffix means tracker synchronization is pending.
 
+### Relative and absolute file paths
+
+Both `upload_file` and `download_file` accept relative and absolute paths. Relative paths are resolved from the **working directory where that client was started**, independently for each client. They are not relative to the executable, tracker configuration, or the other peer. `.` means that working directory and `..` means its parent.
+
+| Operation | Relative path example | Absolute path example |
+| --- | --- | --- |
+| Upload a file | `upload_file study "./files/notes.pdf"` | `upload_file study "/Users/alice/files/notes.pdf"` |
+| Download into a directory | `download_file study notes.pdf "./downloads"` | `download_file study notes.pdf "/Users/bob/Downloads"` |
+| Use a parent directory | `upload_file study "../shared/notes.pdf"` | — |
+| Download into the current directory | `download_file study notes.pdf .` | — |
+
+The upload path must identify a readable regular file. The download destination must be an **existing directory**; the client saves the published filename inside it and does not create missing directories or overwrite existing files. The `file_name` argument to `download_file` remains the published basename, not the uploader's path. Quote paths containing spaces, for example `"../shared files/notes.pdf"`. The interactive client does not expand `~`, environment variables, or shell wildcards; use a full absolute path or a literal relative path.
+
 ### Client commands
 
 | Command | Working and expected behavior |
@@ -85,7 +98,7 @@ User and group IDs must be 1–64 characters using letters, digits, `.`, `_`, or
 | `leave_group <group_id>` | Removes membership and the caller's tracker shares in that group. Locally stops the group's shares and fails its active downloads. If the owner leaves, ownership passes to the earliest remaining member; if nobody remains, the group is deleted. |
 | `upload_file <group_id> <file_path>` | Opens and hashes a local regular file, publishes its basename, size, whole-file hash, and piece hashes, then serves it from the client. File bytes are not uploaded to the tracker. Identical content can have multiple sharers; different content under the same group filename is rejected. **Group ID comes before file path.** |
 | `list_files <group_id>` | Lists filenames with at least one registered share in the group. It does not prove the peers are currently reachable or hold a complete copy. |
-| `download_file <group_id> <file_name> <destination_path>` | Discovers metadata and live peers, creates a temporary file, and queues a background download. **The destination must be an existing directory**, not a new filename. The final file is `<destination_path>/<file_name>`, and an existing file or symlink at that name is rejected. `OK: Download queued` is not completion; inspect `show_downloads`. |
+| `download_file <group_id> <file_name> <destination_path>` | Discovers metadata and live peers, creates a temporary file, and queues a background download. **The destination must be an existing directory**, not a new filename. The final file is `<destination_path>/<file_name>`, and an existing file or symlink at that name is rejected. `OK: Download queued` is not completion; wait for the automatic completion/failure message or inspect `show_downloads`. |
 | `show_downloads` | Prints this process's download history: `[D]` downloading with verified/total piece counts, `[C]` completed, or `[F]` failed. Displays the latest error when present; a downloading job may show a transient retry error. Does not query the tracker. |
 | `stop_share <group_id> <file_name>` | Disables the local source and removes the caller's tracker share registration. Does not delete local data or other users' shares. It does not cancel an active download; that job can continue fetching while local serving stays disabled. |
 | `logout` | Clears the session and tracker share registrations. Local sharing stops and active downloads fail with `Session ended`; existing completed files remain on disk. |
@@ -93,6 +106,26 @@ User and group IDs must be 1–64 characters using letters, digits, `.`, `_`, or
 | `quit` / `exit` | Stops local sharing/download work, logs out the current user through a reachable tracker, and shuts down worker threads. End-of-input, Ctrl+C (`SIGINT`), `SIGTERM`, and `SIGHUP` use the same cleanup path. An uncertain pending login is retried with its original ID so its session can also be logged out. If trackers are unreachable, logout cannot be confirmed. |
 
 Local stop actions for `logout`, `leave_group`, and `stop_share` happen before the tracker response. A tracker failure does not automatically restore the stopped local activity. Keep published source files unchanged while serving them; a piece mismatch disables the source and triggers withdrawal of its tracker share.
+
+### Automatic download results
+
+After a queued download finishes, the client prints a technical result automatically, even while waiting for the next command. You do not need to run `show_downloads` to see completion or failure.
+
+Example completion for a three-byte file containing `abc`:
+
+```text
+[DOWNLOAD COMPLETED] group="study" file="sample.bin" bytes=3 pieces=1/1 integrity=VERIFIED sha1=a9993e364706816aba3e25717850c26c9cd0d89d
+```
+
+Example failure:
+
+```text
+[DOWNLOAD FAILED] group="study" file="sample.bin" bytes=3 pieces=1/1 reason="Whole-file SHA1 mismatch"
+```
+
+`bytes` is the expected total file size and `pieces` is the verified-piece count divided by the total count. `COMPLETED` is reported only after piece/whole-file SHA-1 checks, data flushing, and successful installation of the final filename. A failure includes its specific reason, such as a hash mismatch, disk-write error, destination conflict, or `Session ended` when logout/exit cancels a job. Even `pieces=1/1` can fail final verification or installation.
+
+Each queued job produces one terminal notification. Transient piece failures remain retries and do not produce a final failure notification. `show_downloads` still lists `[D]`, `[C]`, and `[F]` history without repeating automatic messages. Notifications wait until the CLI regains control if a foreground command is blocked on a tracker request.
 
 ### Session exclusivity and exit behavior
 
@@ -158,7 +191,7 @@ download_file study notes.pdf downloads
 show_downloads
 ```
 
-Repeat `show_downloads` until it reports `[C] [study] notes.pdf`. The result is `downloads/notes.pdf`. Keep a client logged in and running to serve its published or verified downloaded pieces.
+Wait for `[DOWNLOAD COMPLETED]` for `notes.pdf`, or check for `[C] [study] notes.pdf` using `show_downloads`. The result is `downloads/notes.pdf`. Keep a client logged in and running to serve its published or verified downloaded pieces.
 
 ### Internal command flow
 

@@ -6,10 +6,12 @@
 #include <condition_variable>
 #include <deque>
 #include <fcntl.h>
+#include <iomanip>
 #include <map>
 #include <mutex>
 #include <poll.h>
 #include <stdexcept>
+#include <sstream>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <thread>
@@ -74,6 +76,7 @@ namespace p2p {
             std::size_t completed = 0;
             std::string status = "D", error;
             bool finalizing = false, announced = false;
+            bool terminal_reported = false;
             Request announcement, revocation;
             bool withdrawn = false;
             Clock::time_point last_progress = Clock::now();
@@ -223,6 +226,7 @@ namespace p2p {
         }
         void fail(const std::shared_ptr<Job>& job, const std::string& error) {
             // Called with mutex held. Other workers finish I/O but discard their results.
+            if (job->status != "D") return; // Preserve the first terminal result.
             job->status = "F"; job->error = error; job->source->active = false;
             wake.notify_all();
         }
@@ -532,6 +536,27 @@ namespace p2p {
             if (job->status == "D") line += " " + std::to_string(job->completed) + "/" + std::to_string(job->states.size()) + " pieces";
             if (!job->error.empty()) line += " (" + job->error + ")";
             out.push_back(std::move(line));
+        }
+        return out;
+    }
+    Fields TransferManager::take_notifications() {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        Fields out;
+        for (const auto& job : impl_->jobs) {
+            if (job->status == "D" || job->terminal_reported) continue;
+            const auto& metadata = job->source->file.metadata;
+            std::ostringstream message;
+            message << "[DOWNLOAD " << (job->status == "C" ? "COMPLETED" : "FAILED") << "]"
+                    << " group=" << std::quoted(job->key.first)
+                    << " file=" << std::quoted(job->key.second)
+                    << " bytes=" << metadata.size
+                    << " pieces=" << job->completed << '/' << job->states.size();
+            if (job->status == "C")
+                message << " integrity=VERIFIED sha1=" << to_hex(metadata.whole_hash);
+            else
+                message << " reason=" << std::quoted(job->error);
+            out.push_back(message.str());
+            job->terminal_reported = true;
         }
         return out;
     }
